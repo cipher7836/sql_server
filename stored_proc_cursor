@@ -1,0 +1,51 @@
+-- Creator: Coronado, Nestor
+-- Date: 12/28/2021
+-- Description:	This stored procedure finds every column in every
+-- table of the database looking for the incorrect
+-- value and updating them to the correct value passed as parameters
+-- =============================================
+CREATE PROCEDURE sp_chngnm 
+	-- Add the parameters for the stored procedure here
+	@oldname VARCHAR(100), @newname VARCHAR(100) --these are the values where you type in the incorrect name and then the corrected name
+AS
+BEGIN
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	SET NOCOUNT ON;
+
+     	SET NOCOUNT ON
+--Find all the tables and the columns that hold the server names 
+DECLARE @tbl_name VARCHAR(100),
+@col_name VARCHAR(100);
+DECLARE cur_name CURSOR FOR
+select table_name, column_name from information_schema.columns
+where table_catalog = 'tester'
+and (column_name like '%sname%' or column_name like '%server_name%' or
+column_name like '%servername%')
+
+DECLARE @sql nvarchar(MAX)
+OPEN cur_name
+FETCH NEXT FROM cur_name INTO @tbl_name, @col_name;
+WHILE @@Fetch_status = 0
+BEGIN
+SELECT @sql = 
+  'UPDATE ' + quotename(@tbl_name) + '
+   SET ' + quotename(@col_name) + ' = @newname
+   WHERE ' +  quotename(@col_name) + ' = @oldname'
+   PRINT @sql
+   EXEC sp_executesql @sql, N'@oldname sysname, @newname sysname', 
+      @oldname, @newname
+ 
+FETCH NEXT FROM cur_name INTO @tbl_name, @col_name
+END
+CLOSE cur_name
+DEALLOCATE cur_name
+SET NOCOUNT OFF
+
+END
+GO
+
+--exec sp_chngnm 'SQLSrv154J8', 'SQLSrv154K8'  this finds the incorrect server name of SQLSrv154J8 and updates it to the correct name of SQLSrv154K8
+
+ 
+
