@@ -1,0 +1,747 @@
+
+Nick Coronado <cipher7836@gmail.com>
+Oct 26, 2022, 12:59 PM
+to me
+
+--DROP Login(s)
+
+--USE [master]
+--GO
+--DROP LOGIN [<svc.brag.name>]
+--GO
+
+--Get database count (rows) in instance
+
+USE [MASTER];
+select * from master.sys.databases
+
+--VIEW Job History
+
+--SELECT * FROM Maintenance.dbo.backup_history WHERE LogDate >= '2022-04-20 09:29:51.733' and LogDate <= '2022-04-20 09:30:04.857'
+------------------------------------------------------------------Check database compatibility level---------
+
+SELECT compatibility_level
+FROM sys.databases WHERE name = '<Databasename>';
+GO
+
+----'110'=SQL2012; '140'=SQL2017
+
+------------------------------------------------
+-------------MSDB.dbo.sysjobhistory Table and run_duration Column----------------
+----In the msdb.dbo.sysjobhistory table, the duration (run_duration column) is also stored as an INT and can be very confusing
+----when querying. It is a duration stored in HHMMSS format similar to run_time except this is a duration. As an example 2300
+----would be 23 minutes. 15467 would be 1 hour, 54 minutes, and 67 seconds. Lets add the run_duration column to our query and
+----see what the results look like.
+
+----The columns that have an original run_duration that are 2 digits are either 0 or 1 depending if they are over or under 30
+----seconds. Also you can see the original run_duration values that are 3 digits are rounded to the nearest minute.
+
+select
+ j.name as 'JobName',
+ run_date,
+ run_time,
+ msdb.dbo.agent_datetime(run_date, run_time) as 'RunDateTime',
+ run_duration,
+ ((run_duration/10000*3600 + (run_duration/100)%100*60 + run_duration%100 + 31 ) / 60)
+          as 'RunDurationMinutes'
+From msdb.dbo.sysjobs j
+INNER JOIN msdb.dbo.sysjobhistory h
+ ON j.job_id = h.job_id
+where j.enabled = 1  --Only Enabled Jobs
+order by JobName, RunDateTime desc
+
+------------------------------------------------
+
+--REMOVE DB FROM 'RESTORING' STATE
+
+--RESTORE DATABASE AOSDI WITH RECOVERY
+------------------------------------------------------------------------------------------------------------------------
+---BACKUP AND RESTORE DATABASE/SERVICE MASTER KEY
+
+----The Database Master Key (DMK) is similar to the Service Master Key (SMK). It builds the root of the SQL Server encryption
+----hierarchy on a database level.The Database Master Key is stored in its database, so it is backed up together with that database.
+----However, it is a best practice to have a separate backup of the DMK. One of the advantages of having a backup of just the DMK
+----is that you can restore it, if for example it was accidentally dropped.
+
+----BACKUP (FROM WORKING NODE)...
+
+USE MASTER
+GO
+
+BACKUP MASTER KEY TO FILE = 'E:\Certificates\<Filename>.bak'
+ENCRYPTION BY PASSWORD = '<Password>';
+
+----RESTORE (TO CORRUPT NODE)...
+
+RESTORE MASTER KEY TO FILE = 'E:\Certificates\<Filename>.bak'
+DECRYPTION BY PASSWORD = '<Password>'; FORCE
+
+------------------------------------------------------------------------------------------------------------------------
+
+--The Connection to the Primary Replica is not Active
+--**CHECK EndPoint certficates (expired?)** - USE 'Replace Mirror Endpoint Certificate.sql'
+--Change the ENDPOINT_URL to use the IP's of the dedicated NIC (TCP://172.xx.xx.xx:5022)
+--From the PRIMARY replica...
+
+--ALTER AVAILABILITY GROUP [ASTAG1]
+--MODIFY REPLICA ON 'BRAGA3NFOITC2N1\AST' WITH (ENDPOINT_URL = 'TCP://BRAGA3NFOITC2N1.nase.ds.army.mil:5483')
+--GO
+
+--ALTER AVAILABILITY GROUP [ASTAG1]
+--MODIFY REPLICA ON 'BRAGA3NFOITC2N3\AST' WITH (ENDPOINT_URL = 'TCP://BRAGA3NFOITC2N3.nase.ds.army.mil:5483')
+--GO
+ 
+--USE [MASTER];
+--ALTER DATABASE [AOSDI] SET HADR AVAILABILITY GROUP = [ASTAG1];
+
+--When replica is disconnected:
+--ALTER AVAILABILITY GROUP <XXXAG1> JOIN
+
+--GRANT CONNECT ON ENDPOINT::C2N1I3EP TO C2N2I3EPLI;
+--GRANT CONNECT ON ENDPOINT::C2N1I3EP TO C2N3I3EPLI;
+--GO
+
+--GRANT CONNECT ON ENDPOINT::C2N2I3EP TO C2N1I3EPLI;
+--GRANT CONNECT ON ENDPOINT::C2N2I3EP TO C2N3I3EPLI;
+--GO
+
+--GRANT CONNECT ON ENDPOINT::C2N3I3EP TO C2N1I3EPLI;
+--GRANT CONNECT ON ENDPOINT::C2N3I3EP TO C2N2I3EPLI;
+--GO
+--------------------------------------------------------------------------------------
+--Drop Certificate
+
+--USE MASTER;
+--DROP CERTIFICATE <certificate_name>;
+--------------------------------------------------------------------------------------
+--LOG DRIVES FULL...
+
+--Reduce VLFs (Use 'NUL' for Staging DBs)
+
+--USE [<databasename>];
+----Check Log Reuse (LOG_BACKUP at execution):  SELECT name, log_reuse_wait_desc FROM master.sys.databases WHERE name IN ('AESIP')
+--BACKUP LOG [AESIP] TO DISK = 'NUL' WITH  NOFORMAT, NOINIT, NAME = 'NUL', SKIP, REWIND, NOUNLOAD, COMPRESSION,  STATS = 100;
+--DBCC SHRINKFILE (N'AESIP_log' , 0, TRUNCATEONLY);
+
+--Determine the free/used space within each file of a database:
+
+Select *, fileproperty(name, 'SpaceUsed') as Used
+From dbo.sysfiles
+
+--Find user permissions/rights
+--SELECT * RKMaintnance.dbo_ADMappings
+
+--TSQL script: 'CollectAllPermissions.sql'
+--SELECT * FROM #TempAllPermissions WHERE [User or Role] in ('NASE\user')
+
+--Orphaned accounts
+--Noted RSExecRole already added to BIRptSQL; and added  RSExecRole owned schema
+ 
+--** When DB move from one place (node) to another (SSRS server) it orphans the acct; script synchs acct
+--EXEC sp_change_users_login 'Auto_Fix', 'IUSR_Server'
+--The number of orphaned users fixed by updating users was 0.
+--The number of orphaned users fixed by adding new logins and then updating users was 0.
+
+----------------------------------------------------------------------------------------------------------------------
+-- Check the active sessions/connection in the SQL server from SQL Server Management Studio.
+-- Also, to confirm database connection(s) -- DNS issue; wrong SP startup procedure (i.e - SharePoint WFE servers booted up before Application Front End (AFE) servers)
+
+sp_who2
+
+--The above query will show all active users and sessions connected to the SQL server.
+----------------------------------------------------------------------------------------------------------------------
+-- Show ALL ACTIVE DATABASE CONNECTIONS (to include number of connections) on the SQL server.
+
+SELECT DB_NAME(dbid) AS DBName,
+COUNT(dbid) AS NumberOfConnections,
+loginame
+FROM    sys.sysprocesses
+GROUP BY dbid, loginame
+ORDER BY DB_NAME(dbid)
+
+--View active SQL server connections with login name(s).
+
+SELECT
+    DB_NAME(dbid) as DBName,
+    COUNT(dbid) as NumberOfConnections,
+    loginame as LoginName
+FROM
+    sys.sysprocesses
+WHERE
+    dbid > 0
+GROUP BY
+    dbid, loginame
+;
+
+
+---------------------------------------------------------------------------------------------------------------------
+--Get license key
+
+--SELECT NvarCharColumn FROM [DATABASENAME].[dbo].[ConfigSettingsProperties] where ColumnName like 'LicenseKey%'
+----------------------------------------------------------------------------------------------------------------------
+
+-- Extract Active Directory attributes by EDIPI or Last Name
+-- Find 'NULL' (orphaned) logins
+-- As needed, xecute script: CreateViewADMappings.sql
+
+USE RKMaintenance
+GO
+EXEC dbo.spViewADMappings
+----------------------------------------------------------------------------------------------------------------------------
+--How much empty space do we have?
+
+SELECT
+     LogicalName = dbf.name
+    ,FileType = dbf.type_desc
+    ,FilegroupName = fg.name
+    ,PhysicalFileLocation = dbf.physical_name
+    ,FileSizeMB = CONVERT(DECIMAL(10,2),dbf.size/128.0)
+    ,UsedSpaceMB = CONVERT(DECIMAL(10,2),dbf.size/128.0 - ((dbf.size/128.0)
+               - CAST(FILEPROPERTY(dbf.name, 'SPACEUSED') AS INT) /128.0))
+    ,FreeSpaceMB = CONVERT(DECIMAL(10,2),dbf.size/128.0
+           - CAST(FILEPROPERTY(dbf.name, 'SPACEUSED') AS INT)/128.0)
+FROM sys.database_files dbf
+LEFT JOIN sys.filegroups fg ON dbf.data_space_id = fg.data_space_id
+ORDER BY dbf.type DESC, dbf.name;
+
+--OR
+
+USE [database name]
+GO
+SELECT
+    [TYPE] = A.TYPE_DESC
+    ,[FILE_Name] = A.name
+    ,[FILEGROUP_NAME] = fg.name
+    ,[File_Location] = A.PHYSICAL_NAME
+    ,[FILESIZE_MB] = CONVERT(DECIMAL(10,2),A.SIZE/128.0)
+    ,[USEDSPACE_MB] = CONVERT(DECIMAL(10,2),A.SIZE/128.0 - ((SIZE/128.0) - CAST(FILEPROPERTY(A.NAME, 'SPACEUSED') AS INT)/128.0))
+    ,[FREESPACE_MB] = CONVERT(DECIMAL(10,2),A.SIZE/128.0 - CAST(FILEPROPERTY(A.NAME, 'SPACEUSED') AS INT)/128.0)
+    ,[FREESPACE_%] = CONVERT(DECIMAL(10,2),((A.SIZE/128.0 - CAST(FILEPROPERTY(A.NAME, 'SPACEUSED') AS INT)/128.0)/(A.SIZE/128.0))*100)
+    ,[AutoGrow] = 'By ' + CASE is_percent_growth WHEN 0 THEN CAST(growth/128 AS VARCHAR(10)) + ' MB -'
+        WHEN 1 THEN CAST(growth AS VARCHAR(10)) + '% -' ELSE '' END
+        + CASE max_size WHEN 0 THEN 'DISABLED' WHEN -1 THEN ' Unrestricted'
+            ELSE ' Restricted to ' + CAST(max_size/(128*1024) AS VARCHAR(10)) + ' GB' END
+        + CASE is_percent_growth WHEN 1 THEN ' [autogrowth by percent, BAD setting!]' ELSE '' END
+FROM sys.database_files A LEFT JOIN sys.filegroups fg ON A.data_space_id = fg.data_space_id
+order by A.TYPE desc, A.NAME;
+
+--Use DBCC SHRINKDATABASE to reclaim the empty space
+
+DBCC SHRINKDATABASE (<database>, 30) <------ (Percent free space to leave)
+GO
+
+--or
+
+USE [DatabaseName];
+DBCC SHRINKFILE(FileName, 7); <------ (Targeted *.mdf/*.ldf; free space in MB to leave)
+
+--Shrinking a log file to a specified target size
+
+USE AdventureWorks2012;  
+GO  
+-- Truncate the log by changing the database recovery model to SIMPLE.  
+ALTER DATABASE AdventureWorks2012  
+SET RECOVERY SIMPLE;  
+GO  
+-- Shrink the truncated log file to 1 MB.
+--Could not locate file for database in sys.database_files. The file either does not exist, or was dropped.
+--Execute:
+--USE [DatabaseName];
+--Select * From sys.database_files; (<--- execute to get correct SHRINKFILE name)
+
+USE [ITAPDB];
+DBCC SHRINKFILE ('ITAPDB_log', 1);  
+GO
+
+
+USE [ProModel_ASTTraining];
+DBCC SHRINKFILE (N'ProModel_ASTTraining_log' , 0, TRUNCATEONLY);
+
+
+
+
+USE [ProModel_ASTTraining];
+ALTER DATABASE [ProModel_ASTTraining] SET RECOVERY SIMPLE;
+
+BACKUP DATABASE [ITAPDB]
+TO DISK = '\\BRAGA7NFOITVE08\CLU2Backup\I2AST\BackupForMirror\ITAPDB_20221005.bak'
+WITH FORMAT
+WAITFOR DELAY '00:00:01.000'
+ 
+BACKUP LOG [ITAPDB]
+TO DISK = '\\BRAGA7NFOITVE08\CLU2Backup\I2AST\BackupForMirror\ITAPDB_20221005.trn'
+
+ALTER DATABASE [ProModel_ASTTraining] SET RECOVERY FULL;
+
+BACKUP LOG [ProModel_ASTTraining] TO DISK = N'\\BRAGA7NFOITVE08\C4Backup\I2ASTSTG\BackupForMirror\ProModel_ASTTraining_Log_20220713.trn';
+
+DBCC SHRINKFILE(ProModel_ASTTraining, TRUNCATEONLY);
+DBCC SHRINKFILE(ProModel_ASTTraining_log, TRUNCATEONLY);
+
+
+
+ 
+-- Reset the database recovery model.  
+ALTER DATABASE AdventureWorks2012  
+SET RECOVERY FULL;  
+GO
+
+
+--Check fragmentation. Review "avg_fragmentation_in_percent" column for (table) #% fragmented.
+--Note: SHRINKHRINKDATABASE goes to the end of the file, picks up pages there, and moves them to the first open available spaces in our data file.
+--Now it’s in reverse order because SQL Server took the stuff at the end and placed it at the beginning; need to reorganize or rebuild indexes.
+
+SELECT * FROM sys.dm_db_index_physical_stats  
+    (DB_ID(N'<database>'), OBJECT_ID(N'dbo.Messages'), NULL, NULL , 'DETAILED');
+
+--SQL Server needs enough empty space in the database to build an entirely new copy of the index. It’s going to:
+--Grow the data file out
+--Use that space to build the new copy of our index
+--Drop the old copy of our index, leaving a bunch of unused space in the file
+
+--***Microsoft recommends to REBUILD indexes it the fragmentation is > 30% and REORGANIZE those < 30% fragmented***
+--After the DBCC SHRINKFILE operations are done, use ALTER INDEX REORGANIZE to reduce the index fragmentation without growing the data file(s) again.
+--Simply using REORGANIZE (rather than REBUILD) avoids the vicious circle of shrinking and growing.
+
+ALTER INDEX IX ON dbo.Messages REORGANIZE; <---- (or 'REBUILD')
+GO
+SELECT * FROM sys.dm_db_index_physical_stats  
+    (DB_ID(N'<database>'), OBJECT_ID(N'dbo.Messages'), NULL, NULL , 'DETAILED');  
+GO
+-----------------------------------------------------------------------------------
+------ REMOVE MIRRORING on HOSTB before rejoining mirror (the NEWPRINCIPAL SERVER, SQL2012) --
+-----------------------------------------------------------------------------------
+
+USE [MASTER]
+ALTER DATABASE [FDQS] SET PARTNER OFF
+
+
+-----------------------------------------------------------------------------------
+------ REMOVE DB (Suspect) fom AVAILABILITY GROUP ------
+-----------------------------------------------------------------------------------
+
+ALTER DATABASE <FDQS> SET HADR OFF
+
+----Take DB out of the availability group, DB goes into restoring mode. Restart the SQL services in Cluster Manager (in order for the DB to realize it was no longer in an availability group).
+-----------------------------------------------------------------------------
+--Check the free space available in each log file with the following query:
+-----------------------------------------------------------------------------
+
+DBCC SQLPERF (LOGSPACE)
+
+-----------------------------------------------------------------------------
+--Add windows login in SQL Server.
+-----------------------------------------------------------------------------
+
+USE master
+CREATE LOGIN [NASE\BRAGA#NFOITV###$] FROM WINDOWS;
+GO
+
+-----------------------------------------------------------------------------
+--Script to see running jobs in SQL Server (with Job Start Time).
+-----------------------------------------------------------------------------
+
+SELECT sj.name,
+ sja.run_requested_date,
+ CONVERT(VARCHAR(12), sja.stop_execution_date-sja.start_execution_date, 114) Duration
+FROM msdb.dbo.sysjobactivity sja
+INNER JOIN msdb.dbo.sysjobs sj
+ON sja.job_id = sj.job_id
+WHERE sja.run_requested_date IS NOT NULL
+ORDER BY sja.run_requested_date desc;
+
+--Find SQL Server agent job running at this moment.
+
+exec msdb.dbo.sp_help_job @execution_status=1
+
+--Find queries (w/ session ID) currently running on server.
+
+SELECT sqltext.TEXT,
+req.session_id,
+req.status,
+req.command,
+req.cpu_time,
+req.total_elapsed_time
+FROM sys.dm_exec_requests req
+CROSS APPLY sys.dm_exec_sql_text(sql_handle) AS sqltext
+
+--Stop long-running query using the following command.
+
+--KILL [session_id]
+
+--Check last successful restore date.
+
+SELECT
+'Successfully restored ' + db.name + ' on ' + CAST(CONVERT(varchar, u.LastDatabaseRestoreDate, 101) AS NVARCHAR(25)) + ' as ' + u.destination_database_name + '.' as [Statement]
+, db.name AS [Database]
+, CAST(CONVERT(varchar, u.LastDatabaseRestoreDate, 101) AS NVARCHAR(25)) AS [Last Restore Date]
+, u.destination_database_name AS [Restore Destination DB]
+FROM  
+sys.databases db
+LEFT OUTER JOIN (
+SELECT
+p2.destination_database_name
+, bus.database_name
+, MAX([d]) AS [LastDatabaseRestoreDate]
+FROM
+msdb.dbo.restorehistory rh PIVOT (MAX(rh.restore_date) FOR [restore_type] IN ([D])) AS p2
+LEFT JOIN
+msdb.dbo.backupset bus ON p2.backup_set_id = bus.backup_set_id
+GROUP BY p2.destination_database_name, bus.database_name
+) AS u ON db.name = u.database_name
+WHERE db.name <> 'TempDB' and U.destination_database_name IS NOT NULL and U.LastDatabaseRestoreDate IS NOT NULL
+ORDER BY u.LastDatabaseRestoreDate desc;
+
+--Query to find the size of the database and database file.
+ 
+sp_helpdb
+
+--Remove Database from "RESTORING..." mode (before joining to AG or Mirror)
+
+--NOTE: For DB names with hyphens (syntax issue), add brackets around the DB name (as seen below)
+
+
+--Change status from 'Not Syncrhonizing / Recovery Pending' to "RESTORING..."
+
+--Fix SQL database not synchronizing recovery pending
+--Method 1. Initiate forceful repair
+--ALTER DATABASE [DBName] SET EMERGENCY;
+--GO
+--ALTER DATABASE [DBName] set single_user
+--GO
+--DBCC CHECKDB ([DBName], REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS;
+--GO
+--ALTER DATABASE [DBName] set multi_user
+--GO
+
+--Databases stuck in 'Not Synchronizing / Recovery Pending' mode (cannot remove DBs from AG):
+--One of two nodes is down/off; cannot RDP (duplicate IPs)
+--From Primary SSMS connection, AlwaysOn High Availability - Availability Groups - (r. click) Delete
+--RESTORE DATABASE [DBName] WITH RECOVERY
+
+--To set a database to SINGLE-USER mode. The termination option WITH ROLLBACK IMMEDIATE is specified in the first ALTER DATABASE statement (this will cause
+--all incomplete transactions to be rolled back and any other connections to the [database] to be immediately disconnected).
+
+--****Restore DB to (requested) point in time****
+--Set database to SINGLE-USER mode.
+
+USE master;
+GO
+ALTER DATABASE ITAPDB
+SET SINGLE_USER
+WITH ROLLBACK IMMEDIATE;
+GO
+
+--To set a database to MULTI-USER mode.
+
+ALTER DATABASE AOSDI
+SET MULTI_USER;
+GO
+
+--Find/Identify requested *.bak and *.trn files to restore (from Local or Share storage location).
+
+USE [MASTER];
+ 
+BACKUP DATABASE [ITAPDB]
+TO DISK = '\\BRAGA7NFOITVE08\CLU2Backup\I2AST\BackupForMirror\ITAPDB_20220909.bak'
+WITH FORMAT
+WAITFOR DELAY '00:00:01.000'
+ 
+BACKUP LOG [ITAPDB]
+TO DISK = '\\BRAGA7NFOITVE08\CLU2Backup\I2AST\BackupForMirror\ITAPDB_20220909.trn'
+-------------------------------------------------------------------------------------
+--**COPYING PROD DATA TO STAGING DB (ON RESTORE NODE/REPLICA)**
+--Copy *.bak files to backup location
+-----------------------------------------------------------------------------------
+USE [MASTER];
+EXECUTE AS LOGIN = 'FCSA';
+RESTORE DATABASE [AOSDI]
+FROM DISK = '\\BRAGA7NFOITVE08\C4Backup\I2ASTSTG\BackupForMirror\01_ASTAG1_AOSDI_Full_202207100700.bak'
+WITH FILE=1,
+MOVE N'AOSDI' TO 'K:\Data\S2\AOSDI2.mdf',   -- (Rename NEW *.mdf file for 'TO' location)
+MOVE N'AOSDI_log' TO 'L:\Log\S2\AOSDI2_log.ldf',  -- (Rename NEW *.ldf file)
+NOUNLOAD,  REPLACE,  STATS = 1
+GO
+ 
+------------------------------------------------------------------------------------
+-- ACTION:  PERFORMED ON PRIMARY REPLICA  --
+---         ADD Primary DB TO Availability Group                              --
+------------------------------------------------------------------------------------
+ 
+USE [MASTER];
+ALTER AVAILABILITY GROUP [ASTAG1] ADD DATABASE [ITAPDB];
+ 
+------------------------------------------------------------------------------------
+-- ACTION:  PERFORMED ON SECONDARY REPLICAs  --
+--          RESTORE FULL BACKUPS TO SECONDARY REPLICAS                          --
+-- NOTE:  ASSUMES EXECUTE AS LOGIN has dbcreator rights  --
+------------------------------------------------------------------------------------
+
+
+--REMOVE DB FROM 'RESTORING' STATE
+
+--RESTORE DATABASE ITAPDB WITH RECOVERY
+
+USE [MASTER];
+EXECUTE AS LOGIN = 'FCSBIA';
+RESTORE DATABASE [ITAPDB]
+FROM DISK = '\\BRAGA7NFOITVE08\CLU2Backup\I2AST\BackupForMirror\ITAPDB_20221005.bak'
+WITH NORECOVERY;
+REVERT;
+ 
+WAITFOR DELAY '00:00:01.000'
+RESTORE LOG [ITAPDB]
+FROM DISK = '\\BRAGA7NFOITVE08\CLU2Backup\I2AST\BackupForMirror\ITAPDB_20221005.trn'
+WITH FILE=1, NORECOVERY;
+ 
+------------------------------------------------------------------------------------
+-- ACTION:  PERFORMED ON SECONDARY REPLICAs  --
+---         JOIN SECONDARY DBs TO AG                                              --
+------------------------------------------------------------------------------------
+ 
+USE [MASTER];
+ALTER DATABASE [ITAPDB] SET HADR AVAILABILITY GROUP = [ASTAG1];
+
+
+
+USE [master]
+BACKUP LOG [mcatstage_MSCRM] TO  DISK = N'\\BRAGA7NFOITVE08\C9Backup\I1TMT\mcatstage_MSCRM_LogBackup_2019-10-17_10-58-04.bak' WITH NOFORMAT, NOINIT,  NAME = N'mcatstage_MSCRM_LogBackup_2019-10-17_10-58-04', NOSKIP, NOREWIND, NOUNLOAD,  STATS = 5
+RESTORE DATABASE [mcatstage_MSCRM] FROM  DISK = N'\\BRAGA7NFOITVE08\C9Backup\I1TMT\BackupForMirror\mcatstage_MSCRM_20191008.bak' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  REPLACE,  STATS = 5
+RESTORE LOG [mcatstage_MSCRM] FROM  DISK = N'\\BRAGA7NFOITVE08\C9Backup\I1TMT\BackupForMirror\mcatstage_MSCRM_20191008.trn' WITH  FILE = 1,  NOUNLOAD,  STATS = 5
+
+GO
+
+--OR
+
+USE [master]
+RESTORE DATABASE [TMTTRNG_MSCRM] FROM  DISK = N'\\BRAGA7NFOITVE08\C9Backup\I1TMT\TMTTRNG_MSCRM_20191022125326.bak' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  REPLACE,  STATS = 5
+RESTORE LOG [TMTTRNG_MSCRM] FROM  DISK = N'\\BRAGA7NFOITVE08\C9Backup\I1TMT\TMTTRNG_MSCRM_20191022125326.trn' WITH  FILE = 1,  NOUNLOAD,  STATS = 5
+
+GO
+
+--Set database to MULTI-USER mode.
+
+ALTER DATABASE [mcatstage_MSCRM]
+SET MULTI_USER;
+GO
+
+--OR
+
+ALTER DATABASE mcatstage_MSCRM
+SET MULTI_USER
+WITH ROLLBACK IMMEDIATE
+
+--If [above] doesn't work: "Database <DB> is already open and can only have one user at a time."
+
+--Transaction (Process ID 172) was deadlocked...
+
+SET DEADLOCK_PRIORITY NORMAL;
+GO
+
+--Kill the existing connection and setting MULTI_USER in the same batch:
+
+USE master;
+GO
+DECLARE @sql nvarchar(MAX);
+SELECT @sql = ' KILL ' + CAST(session_id as varchar(5))
+    FROM sys.dm_exec_sessions
+    WHERE database_id = DB_ID(N'mcatstage_MSCRM');
+SET @sql = @sql + N' ALTER DATABASE mcatstage_MSCRM SET MULTI_USER;';
+EXEC sp_executesql @sql;
+GO
+
+--DROP CERTIFICATE
+USE [master]
+GO
+DROP CERTIFICATE <certificatename>;
+
+--Determine DB Connections (Who, DB, # connections, WFE host)
+
+USE MASTER
+SELECT db_name(dbid) as DatabaseName, count(dbid) as NoOfConnections, Hostname,
+loginame as LoginName
+FROM sys.sysprocesses
+WHERE dbid > 0
+GROUP BY dbid, loginame, Hostname
+
+--View active SQL server connections.
+
+SELECT
+    DB_NAME(dbid) as DBName,
+    COUNT(dbid) as NumberOfConnections,
+    loginame as LoginName
+FROM
+    sys.sysprocesses
+WHERE
+    dbid > 0
+GROUP BY
+    dbid, loginame
+;
+
+--Rename SA account
+
+-- Change SA Name and Password
+
+--  Rule Title:  SQL Server default account sa must have its name changed.
+--  STIG ID: SQL2-00-010200  Rule ID: SV-53412r2_rule  Vuln ID: V-41037
+--  Severity: CAT III Class: Unclass
+--  MODIFY @Password
+-----------------------------------------------------------------------------------------------------
+--Get Password Expiration Date in SQL Server 2012
+
+SELECT name,
+create_date,
+modify_date,
+LOGINPROPERTY(name, 'DaysUntilExpiration') DaysUntilExpiration,
+LOGINPROPERTY(name, 'PasswordLastSetTime') PasswordLastSetTime,
+LOGINPROPERTY(name, 'IsExpired') IsExpired,
+LOGINPROPERTY(name, 'IsMustChange') IsMustChange
+From sys.sql_logins ;
+
+-- CHANGE PASSWORD Variable. Execute both (below) queries together.
+USE [master]
+DECLARE @Password NVARCHAR(17) = 'PA$$word123456' --<----------------------------------------------- EDIT THIS LINE.  Change <Strong Password> to one that meets DoD standards;
+DECLARE @SAName VARCHAR(MAX) = (SELECT name FROM sys.syslogins WHERE sid = 0x01)
+If @SAName = 'SA'
+BEGIN
+ALTER LOGIN sa WITH NAME = FCSA
+PRINT 'Changed SA to FCSA'
+END
+ELSE
+BEGIN
+PRINT 'SA Name is: ' + @SAName
+END
+
+
+-- Change SA Password
+DECLARE @SA VARCHAR(MAX) = (SELECT name FROM sys.syslogins WHERE sid = 0x01)
+DECLARE @SQLCommand NVARCHAR(250) = 'ALTER LOGIN [' + @SA + '] WITH PASSWORD = N''' + @Password + ''''
+EXEC (@SQLCOmmand)
+PRINT 'Changed password for ' + @SA + ' to ' + @Password
+ALTER LOGIN [FCSA] DISABLE
+PRINT 'Disabled FCSA'
+-----------------------------------------------------------------------------------
+--Update/Change Password Script (**ALL REPLICAS for SQL logins)
+
+--Use STAFFDIRECTORY
+--GO
+--ALTER LOGIN PcciuWebApp WITH PASSWORD = '<password>';
+
+-----------------------------------------------------------------------------------
+--Repair SQL Server Database marked as Suspect or Corrupted
+
+EXEC sp_resetstatus 'TMTTRNG_MSCRM'
+
+--REMOVE DB FROM "RESTORING" STATE
+
+ALTER DATABASE TMTTRNG_MSCRM SET EMERGENCY
+
+DBCC CheckDB ('TMTTRNG_MSCRM')
+
+ALTER DATABASE TMTTRNG_MSCRM SET SINGLE_USER WITH ROLLBACK IMMEDIATE
+
+DBCC CheckDB ('TMTTRNG_MSCRM', REPAIR_ALLOW_DATA_LOSS)
+ 
+ALTER DATABASE TMTTRNG_MSCRM SET MULTI_USER
+
+-----------------------------------------------------------------------------------
+--Grant View Rights to User1
+
+--(C2I2)
+SELECT * FROM [STAFFDIRECTORY].[dbo].[VW_AllPersonalContact]
+
+--use [STAFFDIRECTORY]
+--GO
+--GRANT VIEW DEFINITION TO [PcciuWebApp] AS [dbo]
+--GO
+
+--use [STAFFDIRECTORY]
+--GO
+--REVOKE VIEW DEFINITION TO [PcciuWebApp] AS [dbo]
+--GO
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+--[298] SQLServer Error: 15404, Could not obtain information about Windows NT group/user 'NASE\5#####.sa', error code 0x5. [SQLSTATE 42000] (ConnIsLoginSysAdmin)
+
+--> 1) **Remove from Mirror/AG: Expand AG - Availability Dtabases - R. click <AG_database> - Remove Secondary Database...
+
+--2) Remove from Restoring state
+
+--> 3) Delete the SECONDARY <database>
+
+--> 4) RESTORE DATABASE LcsLog WITH NORECOVERY
+
+--Solution
+ 
+USE LcsLog
+GO
+ALTER DATABASE LcsLog set TRUSTWORTHY ON;
+GO
+EXEC dbo.sp_changedbowner @loginame = N'FCSA', @map = false
+GO
+sp_configure 'show advanced options', 1;
+GO
+RECONFIGURE;
+GO
+sp_configure 'clr enabled', 1;
+GO
+RECONFIGURE;
+GO
+---------------------------------------------------------------------------------------------------------------------
+--> 5) Rejoin DB to AG
+
+-- ACTION:  PERFORMED ON PRIMARY REPLICA  --
+--          PERFORM FULL AND LOG BACKUPS      --
+------------------------------------------------------------------------------------
+ 
+--USE [MASTER];
+ 
+--BACKUP DATABASE [ProModel_AST]
+-- TO DISK = '\\BRAGA7NFOITVE08\C2Backup\I3AST\BackupForMirror\ProModel_AST_20220718135824.bak'
+-- WITH FORMAT
+--WAITFOR DELAY '00:00:01.000'
+ 
+--BACKUP LOG [ProModel_AST]
+-- TO DISK = '\\BRAGA7NFOITVE08\C2Backup\I3AST\BackupForMirror\ProModel_AST_20220718135824.trn'
+ 
+ 
+--------------------------------------------------------------------------------------
+---- ACTION:  PERFORMED ON PRIMARY REPLICA  --
+-----         ADD Primary DB TO Availability Group                              --
+--------------------------------------------------------------------------------------
+ 
+--USE [MASTER];
+--ALTER AVAILABILITY GROUP [ASTAG1] ADD DATABASE [ProModel_AST];
+ 
+--------------------------------------------------------------------------------------
+---- ACTION:  PERFORMED ON SECONDARY REPLICAs  --
+----          RESTORE FULL BACKUPS TO SECONDARY REPLICAS                          --
+---- NOTE:  ASSUMES EXECUTE AS LOGIN has dbcreator rights  --
+--------------------------------------------------------------------------------------
+ 
+--USE [MASTER];
+--EXECUTE AS LOGIN = 'FCSA';
+--RESTORE DATABASE [ProModel_AST]
+-- FROM DISK = '\\BRAGA7NFOITVE08\C2Backup\I3AST\BackupForMirror\ProModel_AST_20220718135824.bak'
+-- WITH NORECOVERY;
+--REVERT;
+ 
+--WAITFOR DELAY '00:00:01.000'
+--RESTORE LOG [ProModel_AST]
+-- FROM DISK = '\\BRAGA7NFOITVE08\C2Backup\I3AST\BackupForMirror\ProModel_AST_20220718135824.trn'
+-- WITH FILE=1, NORECOVERY;
+ 
+ 
+--------------------------------------------------------------------------------------
+---- ACTION:  PERFORMED ON SECONDARY REPLICAs  --
+-----         JOIN SECONDARY DBs TO AG                                              --
+--------------------------------------------------------------------------------------
+ 
+--USE [MASTER];
+--ALTER DATABASE [ProModel_AST] SET HADR AVAILABILITY GROUP = [ASTAG1];
+
+
+--EXEC sp_cycle_errorlog ;  
+--GO 
+
